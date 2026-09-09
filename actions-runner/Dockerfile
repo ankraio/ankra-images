@@ -29,6 +29,24 @@ FROM ghcr.io/actions/actions-runner:${RUNNER_VERSION}
 
 # Pinned so a rebuild of the same tag produces the same plugin.
 ARG COMPOSE_VERSION=v5.5.1
+# CLI tools the GitHub-hosted and Depot runner images ship as a baseline and
+# that our workflows call bare, with no setup-* action. The stock ARC image has
+# none of them, which is how cluster's helm-lint failed with "helm: command not
+# found" the first time it ran on ARC (ankra-etutg). Pinned rather than
+# floating, so a rebuild of the same tag produces the same tools.
+#
+# HELM stays on the 3.x line on purpose. Workflows call `helm lint --strict`
+# with no version pin of their own, and helm 4 changes lint behaviour; moving
+# that major is a deliberate decision for another change, not a side effect of
+# giving ARC a helm at all.
+#
+# KUBECTL tracks the 1.36 line to match ankra-infrastructure (1.36.2) rather
+# than newest-stable, keeping it inside the +/-1 minor skew for every cluster
+# these workflows deploy to.
+ARG HELM_VERSION=v3.21.4
+ARG KUBECTL_VERSION=v1.36.4
+ARG GH_VERSION=2.100.0
+ARG YQ_VERSION=v4.53.6
 ARG TARGETARCH
 
 USER root
@@ -62,6 +80,30 @@ RUN set -eux; \
         "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}"; \
     chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
 
+# helm, kubectl, gh and yq. Direct downloads rather than apt repos: each of
+# these publishes a static binary, and adding four third-party apt sources to a
+# CI runner image is a supply-chain surface for no benefit.
+RUN set -eux; \
+    ARCH="${TARGETARCH:-amd64}"; \
+    case "${ARCH}" in \
+        amd64|arm64) ;; \
+        *) echo "unsupported TARGETARCH=${ARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-${ARCH}.tar.gz" \
+        | tar -xz -C /tmp; \
+    install -m 0755 "/tmp/linux-${ARCH}/helm" /usr/local/bin/helm; \
+    rm -rf "/tmp/linux-${ARCH}"; \
+    curl -fsSL -o /usr/local/bin/kubectl \
+        "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl"; \
+    chmod 0755 /usr/local/bin/kubectl; \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${ARCH}.tar.gz" \
+        | tar -xz -C /tmp; \
+    install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${ARCH}/bin/gh" /usr/local/bin/gh; \
+    rm -rf "/tmp/gh_${GH_VERSION}_linux_${ARCH}"; \
+    curl -fsSL -o /usr/local/bin/yq \
+        "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${ARCH}"; \
+    chmod 0755 /usr/local/bin/yq
+
 # Fail the build rather than ship an image that silently lacks a toolchain the
 # lanes depend on. Each line here corresponds to a measured gap in ankra-n2cs1.
 RUN set -eux; \
@@ -70,6 +112,10 @@ RUN set -eux; \
     docker compose version >/dev/null; \
     python3 -m venv /tmp/_venv_selftest; \
     /tmp/_venv_selftest/bin/pip --version >/dev/null; \
-    rm -rf /tmp/_venv_selftest
+    rm -rf /tmp/_venv_selftest; \
+    helm version --short >/dev/null; \
+    kubectl version --client >/dev/null; \
+    gh --version >/dev/null; \
+    yq --version >/dev/null
 
 USER runner
