@@ -2,8 +2,8 @@
 #
 # Base is the upstream GitHub Actions runner used by the gha-runner-scale-set
 # chart. On top of it we preinstall the three toolchains that the stock image
-# does not carry and that our CI lanes need, so that jobs can move from Depot
-# onto the ankra-infrastructure ARC scale set without per-job `apt-get install`
+# does not carry and that our CI lanes need, so that jobs run on the
+# ankra-infrastructure ARC scale set without per-job `apt-get install`
 # preambles (measured on ghcr.io/actions/actions-runner:latest, see ankra-n2cs1):
 #
 #   * cc / gcc / g++ / make  -- absent upstream. `go test -race` needs cgo and
@@ -29,8 +29,8 @@ FROM ghcr.io/actions/actions-runner:${RUNNER_VERSION}
 
 # Pinned so a rebuild of the same tag produces the same plugin.
 ARG COMPOSE_VERSION=v5.5.1
-# CLI tools the GitHub-hosted and Depot runner images ship as a baseline and
-# that our workflows call bare, with no setup-* action. The stock ARC image has
+# CLI tools the GitHub-hosted runner images ship as a baseline and that our
+# workflows call bare, with no setup-* action. The stock ARC image has
 # none of them, which is how cluster's helm-lint failed with "helm: command not
 # found" the first time it ran on ARC (ankra-etutg). Pinned rather than
 # floating, so a rebuild of the same tag produces the same tools.
@@ -54,7 +54,24 @@ USER root
 # One layer: apt metadata is dropped in the same step so it never reaches the
 # image. build-essential brings cc/gcc/g++/make; python3.12-venv is the Ubuntu
 # 24.04 package that restores ensurepip.
-RUN apt-get update \
+# Acquire::ForceIPv4 and the retry/timeout settings are not tuning, they are
+# what makes this layer finish at all.
+#
+# archive.ubuntu.com publishes AAAA records alongside A, and from both the ARC
+# scale sets and GitHub-hosted runners the IPv6 path to it is effectively
+# dead-slow. Measured 2026-09-11:
+#   from an arc runner:  254 kB in 18.9s  -> ~13 kB/s   (dl.google.com from the
+#                                                        same runner: 117 MB/s)
+#   inside buildkit:     96.2 MB of archives at ~18-20 kB/s, i.e. ~87 minutes;
+#                        this build ran 47 min without finishing and was
+#                        cancelled (ankra-1aefc)
+# The same build took 0-1 minute on Depot, whose egress was IPv4-only.
+#
+# Forcing IPv4 sidesteps it. The timeout and retries are belt-and-braces so a
+# slow mirror fails loudly instead of hanging a weekly cron nobody watches.
+RUN printf 'Acquire::ForceIPv4 "true";\nAcquire::Retries "3";\nAcquire::http::Timeout "30";\n' \
+        > /etc/apt/apt.conf.d/99-ankra-network \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         pkg-config \
@@ -76,7 +93,7 @@ RUN set -eux; \
         *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     mkdir -p /usr/local/lib/docker/cli-plugins; \
-    curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+    curl -4 -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
         "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}"; \
     chmod 0755 /usr/local/lib/docker/cli-plugins/docker-compose
 
@@ -89,18 +106,18 @@ RUN set -eux; \
         amd64|arm64) ;; \
         *) echo "unsupported TARGETARCH=${ARCH}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-${ARCH}.tar.gz" \
+    curl -4 -fsSL "https://get.helm.sh/helm-${HELM_VERSION}-linux-${ARCH}.tar.gz" \
         | tar -xz -C /tmp; \
     install -m 0755 "/tmp/linux-${ARCH}/helm" /usr/local/bin/helm; \
     rm -rf "/tmp/linux-${ARCH}"; \
-    curl -fsSL -o /usr/local/bin/kubectl \
+    curl -4 -fsSL -o /usr/local/bin/kubectl \
         "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${ARCH}/kubectl"; \
     chmod 0755 /usr/local/bin/kubectl; \
-    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${ARCH}.tar.gz" \
+    curl -4 -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${ARCH}.tar.gz" \
         | tar -xz -C /tmp; \
     install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${ARCH}/bin/gh" /usr/local/bin/gh; \
     rm -rf "/tmp/gh_${GH_VERSION}_linux_${ARCH}"; \
-    curl -fsSL -o /usr/local/bin/yq \
+    curl -4 -fsSL -o /usr/local/bin/yq \
         "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_${ARCH}"; \
     chmod 0755 /usr/local/bin/yq
 
