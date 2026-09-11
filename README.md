@@ -14,8 +14,8 @@ toolchains the stock image does not carry:
 | `docker compose` CLI plugin | missing (only `docker-buildx`) | cluster `platform-e2e` (`system_test/run_e2e.sh`) |
 | `python3 -m venv`, `pip3` | `venv` fails, no `pip3` | the alembic migration venv in `run_e2e.sh` |
 
-Without these, those lanes cannot run on ARC at all, which is what kept them on
-Depot (`ankra-n2cs1`).
+Without these, those lanes cannot run on ARC at all -- baking them in is the
+whole reason this image exists rather than the stock one (`ankra-n2cs1`).
 
 Language runtimes (Go, Node, …) are deliberately **not** baked in — workflows
 pin those with `actions/setup-go` / `actions/setup-node`, and duplicating them

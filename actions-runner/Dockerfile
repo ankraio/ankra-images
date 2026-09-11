@@ -2,8 +2,8 @@
 #
 # Base is the upstream GitHub Actions runner used by the gha-runner-scale-set
 # chart. On top of it we preinstall the three toolchains that the stock image
-# does not carry and that our CI lanes need, so that jobs can move from Depot
-# onto the ankra-infrastructure ARC scale set without per-job `apt-get install`
+# does not carry and that our CI lanes need, so that jobs run on the
+# ankra-infrastructure ARC scale set without per-job `apt-get install`
 # preambles (measured on ghcr.io/actions/actions-runner:latest, see ankra-n2cs1):
 #
 #   * cc / gcc / g++ / make  -- absent upstream. `go test -race` needs cgo and
@@ -29,8 +29,8 @@ FROM ghcr.io/actions/actions-runner:${RUNNER_VERSION}
 
 # Pinned so a rebuild of the same tag produces the same plugin.
 ARG COMPOSE_VERSION=v5.5.1
-# CLI tools the GitHub-hosted and Depot runner images ship as a baseline and
-# that our workflows call bare, with no setup-* action. The stock ARC image has
+# CLI tools the GitHub-hosted runner images ship as a baseline and that our
+# workflows call bare, with no setup-* action. The stock ARC image has
 # none of them, which is how cluster's helm-lint failed with "helm: command not
 # found" the first time it ran on ARC (ankra-etutg). Pinned rather than
 # floating, so a rebuild of the same tag produces the same tools.
