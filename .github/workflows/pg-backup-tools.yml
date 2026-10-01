@@ -1,0 +1,124 @@
+name: pg-backup-tools image
+
+# Builds the PostgreSQL backup and restore tools image (postgres:16 Alpine plus
+# age, rclone and curl) that the Psono backup and restore Jobs on
+# ankra-infrastructure pin by digest. See pg-backup-tools/Dockerfile for why it
+# exists (ankra-wcne8).
+#
+# Every build runs pg-backup-tools/smoke-test.sh inside the freshly built image
+# before anything is pushed. That script is the encrypted dump and restore round
+# trip the Jobs perform, so a tag that is published has been proven able to do
+# it.
+#
+# The weekly rebuild picks up Alpine security fixes and publishes a NEW
+# immutable tag. Nothing already deployed changes: the manifests pin a digest,
+# so the backups move only when someone re-pins them.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'pg-backup-tools/**'
+      - '.github/workflows/pg-backup-tools.yml'
+  pull_request:
+    paths:
+      - 'pg-backup-tools/**'
+      - '.github/workflows/pg-backup-tools.yml'
+  schedule:
+    - cron: '41 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build, smoke-test and publish
+    runs-on: ${{ vars.CI_RUNNER_2 || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tags
+        id: tags
+        run: |
+          set -euo pipefail
+          PG_TAG=$(grep -m1 '^ARG PG_TAG=' pg-backup-tools/Dockerfile | cut -d= -f2)
+          PG_VERSION=${PG_TAG%%-*}
+          IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER}/pg-backup-tools
+          SHORT=${GITHUB_SHA::7}
+          # The immutable tag (plus its digest) is what the manifests pin.
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "immutable=${IMAGE}:${PG_VERSION}-${SHORT}" >> "$GITHUB_OUTPUT"
+          TAGS="${IMAGE}:${PG_VERSION}-${SHORT}"
+          if [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
+            TAGS="${TAGS},${IMAGE}:${PG_VERSION%%.*},${IMAGE}:latest"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "pg_tag=${PG_TAG}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Build the amd64 image (the platform ankra-infrastructure runs) into the
+      # local daemon and run the round trip in it. A failure stops the job
+      # before the push step.
+      - name: Build for the smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: pg-backup-tools
+          platforms: linux/amd64
+          load: true
+          tags: pg-backup-tools:smoke
+          cache-from: type=gha,scope=pg-backup-tools
+          cache-to: type=gha,mode=max,scope=pg-backup-tools
+          provenance: false
+          sbom: false
+
+      - name: Smoke test (encrypted dump and restore round trip)
+        run: docker run --rm pg-backup-tools:smoke pg-backup-tools-smoke-test
+
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: pg-backup-tools
+          # arm64 as well, so the pinned digest (a multi-platform index) still
+          # runs if a node group moves to Hetzner's Arm servers.
+          platforms: linux/amd64,linux/arm64
+          # Pull requests build but do not publish.
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha,scope=pg-backup-tools
+          cache-to: type=gha,mode=max,scope=pg-backup-tools
+          # Plain containerd pulls this by digest. Buildx's attestation
+          # manifests are noise there, and Harbor rejects them.
+          provenance: false
+          sbom: false
+
+      - name: Summary
+        run: |
+          {
+            echo "### pg-backup-tools"
+            echo
+            echo "Base: \`postgres:${{ steps.tags.outputs.pg_tag }}\`"
+            echo
+            if [ "${{ github.event_name }}" != "pull_request" ]; then
+              echo "Pin this in the backup and restore manifests:"
+              echo
+              echo '```'
+              echo "${{ steps.tags.outputs.immutable }}@${{ steps.push.outputs.digest }}"
+              echo '```'
+            else
+              echo "Pull request build: smoke-tested, not published."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
