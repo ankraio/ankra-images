@@ -33,7 +33,15 @@ FROM postgres:${PG_TAG}@${PG_DIGEST}
 # The restore Jobs start their throwaway PostgreSQL with `su-exec postgres ...`.
 # The base ships su-exec as an alias of gosu (/usr/local/bin), and the last line
 # checks that it is still there.
-RUN apk add --no-cache age rclone curl \
+# apk upgrade first: the base image is pinned by digest, so without it a
+# weekly rebuild keeps the base's Alpine packages forever and only the three
+# added packages are ever current. On 2026-11-24 every published tag still
+# carried the known-exploited brotli CVE-2026-111497 (brotli-libs 1.2.0-r1,
+# pulled in by curl) and libxslt CVE-2026-125350 (1.1.43-r3, from the base)
+# after Alpine had shipped both fixes (ankra-eupti8.7). PostgreSQL itself is
+# built into the base, not an Alpine package, so this never moves its version.
+RUN apk upgrade --no-cache \
+ && apk add --no-cache age rclone curl \
  && age --version \
  && rclone version \
  && curl --version \
